@@ -1,0 +1,69 @@
+name: Build WDA IPA
+
+# Запуск вручную кнопкой (вкладка Actions → Build WDA IPA → Run workflow).
+on:
+  workflow_dispatch:
+    inputs:
+      wda_ref:
+        description: "Ветка/тег WebDriverAgent (master или тег релиза, напр. v9.20.0)"
+        required: true
+        default: "master"
+
+jobs:
+  build:
+    runs-on: macos-14          # облачный Mac от GitHub (бесплатно)
+    steps:
+      - name: Забрать исходники WebDriverAgent
+        uses: actions/checkout@v4
+        with:
+          repository: appium/WebDriverAgent
+          ref: ${{ github.event.inputs.wda_ref }}
+
+      - name: Выбрать современный Xcode (SDK под iOS 26)
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Показать окружение (для дебага, если что-то пойдёт не так)
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i ios || true
+
+      - name: Собрать WebDriverAgentRunner для устройства (БЕЗ подписи)
+        run: |
+          set -e
+          xcodebuild build-for-testing \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ./build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      - name: Упаковать .app в .ipa
+        run: |
+          set -e
+          # Находим собранный runner .app (имя стабильно, но ищем на всякий случай).
+          APP=$(find build/Build/Products -name "WebDriverAgentRunner-Runner.app" -type d | head -1)
+          if [ -z "$APP" ]; then
+            echo "❌ Не нашёл WebDriverAgentRunner-Runner.app — сборка не удалась."
+            find build/Build/Products -maxdepth 3 -name "*.app" -type d || true
+            exit 1
+          fi
+          echo "✅ Нашёл: $APP"
+          WORK=$(mktemp -d)
+          mkdir -p "$WORK/Payload"
+          cp -R "$APP" "$WORK/Payload/"
+          (cd "$WORK" && zip -qry WebDriverAgent.ipa Payload)
+          mkdir -p out
+          mv "$WORK/WebDriverAgent.ipa" out/WebDriverAgent.ipa
+          ls -lh out/
+
+      - name: Выложить готовый .ipa (Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebDriverAgent-ipa
+          path: out/WebDriverAgent.ipa
+          if-no-files-found: error
